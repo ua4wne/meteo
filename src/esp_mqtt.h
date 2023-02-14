@@ -1,11 +1,11 @@
-#ifndef __ESPWEBMQTT_H
-#define __ESPWEBMQTT_H
+#ifndef __ESPMQTT_H
+#define __ESPMQTT_H
 
-#include "ESPWeb.h"
+#include "espwebcore.h"
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
 
-const char defMQTTClient[] PROGMEM = "ESP8266_"; // Префикс имени клиента для MQTT-брокера по умолчанию
+const char defMQTTClient[] PROGMEM = "ESP_"; // Префикс имени клиента для MQTT-брокера по умолчанию
 const uint16_t defMQTTPort = 1883; // Порт MQTT-брокера по умолчанию
 
 const char pathMQTT[] PROGMEM = "/mqtt"; // Путь до страницы конфигурации параметров MQTT
@@ -20,10 +20,9 @@ const char paramMQTTUser[] PROGMEM = "mqttuser";
 const char paramMQTTPassword[] PROGMEM = "mqttpswd";
 const char paramMQTTClient[] PROGMEM = "mqttclient";
 
-class ESPWebMQTTBase : public ESPWebBase { // Расширение базового класса с поддержкой MQTT
+class ESPMQTT : public ESPWebCore { // Расширение базового класса с поддержкой MQTT
 public:
-  ESPWebMQTTBase();
-
+  ESPMQTT();
   PubSubClient* pubSubClient; // Клиент MQTT-брокера
 
 protected:
