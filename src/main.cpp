@@ -36,6 +36,7 @@ Adafruit_BMP085 bmp;
 const char overSSID[] PROGMEM = "METEO_"; // Префикс имени точки доступа по умолчанию
 const char overMQTTClient[] PROGMEM = "METEO_"; // Префикс имени MQTT-клиента по умолчанию
 char uid[16]; //идентификатор устройства
+char webServer[16]; //web server name
 char readSensor[7]; //период опроса датчиков температуры
 char psendData[7]; //период отправки данных температуры
 char sendStatus[7]; //период отправки статуса
@@ -49,6 +50,7 @@ uint32_t sleep_time = 30e7; //период засыпания 5 минут
 
 // Имена параметров для Web-форм
 const char paramUid[] PROGMEM = "uid";
+const char paramWebServer[] PROGMEM = "webServer";
 const char paramReadSensor[] PROGMEM = "readSensor";
 const char paramSendData[] PROGMEM = "psendData";
 const char paramSendStatus[] PROGMEM = "sendStatus";
@@ -98,7 +100,6 @@ class METEO : public ESPMQTT {
     void publishPressure(); // Публикация давления в MQTT
     void sendReport(); // Отправка данных состояния на сервер
     void readSensors(); //чтение данных с сенсоров
-    void sendSensorData(); //отправка данных с сенсоров на сервер
     float climateTempTolerance; // Порог изменения температуры
     float climateHumTolerance; // Порог изменения влажности
     float climatePressTolerance; // Порог изменения давления
@@ -207,14 +208,14 @@ void METEO::loopExtra() {
 
   if ((int32_t)millis() >= (int32_t)climateSendTime) {
     #ifndef USE_MQTT
-    sendSensorData();
+    //sendSensorData();
     #endif
     climateSendTime = millis() + timeSendData;
   }
   if (sleep) {
     //sendReport();
-    readSensors();
-    sendSensorData();
+    //readSensors();
+    //sendSensorData();
     ESP.deepSleep(sleep_time);
   }
 }
@@ -233,6 +234,8 @@ uint16_t METEO::readConfig() {
     uint16_t start = offset;
     getEEPROM(offset, uid);
     offset += sizeof(uid);
+    getEEPROM(offset, webServer);
+    offset += sizeof(webServer);
     getEEPROM(offset, readSensor);
     offset += sizeof(readSensor);
     getEEPROM(offset, psendData);
@@ -255,6 +258,8 @@ uint16_t METEO::writeConfig(bool commit) {
   uint16_t start = offset;
   putEEPROM(offset, uid);
   offset += sizeof(uid);
+  putEEPROM(offset, webServer);
+  offset += sizeof(webServer);
   putEEPROM(offset, readSensor);
   offset += sizeof(readSensor);
   putEEPROM(offset, psendData);
@@ -292,6 +297,9 @@ bool METEO::setConfigParam(const String &name, const String &value) {
   if (! ESPMQTT::setConfigParam(name, value)) {
     if (name.equals(FPSTR(paramUid))) {
       strncpy(uid, value.c_str(), sizeof(uid));
+    }
+    else if (name.equals(FPSTR(paramWebServer))) {
+      strncpy(webServer, value.c_str(), sizeof(webServer));
     }
     else if (name.equals(FPSTR(paramReadSensor))) {
       strncpy(readSensor, value.c_str(), sizeof(readSensor));
@@ -464,6 +472,16 @@ void METEO::handleOptionConfig() {
   page += F(" maxlength=");
   page += String(sizeof(uid));
   page += F(">\n");
+  page += F("<label>Web server:</label>\n\
+  <input type=\"text\" name=\"");
+  page += FPSTR(paramWebServer);
+  page += F("\" value=\"");
+  page += escapeQuote(charBufToString(webServer, sizeof(webServer)));
+  page += F("\" size=");
+  page += String(sizeof(webServer));
+  page += F(" maxlength=");
+  page += String(sizeof(webServer));
+  page += F(">\n");
   page += F("<hr>\n<div class=\"btn-group\">\n<input type=\"submit\" value=\"Save\">\n");
   page += btnBack();
   page += F("<input type=\"hidden\" name=\"reboot\" value=\"1\">\n</div>\n</form>\n");
@@ -562,20 +580,22 @@ void METEO::publishPressure() {
 
 void METEO::sendReport() {
   String strUID(uid);
+  String strWebServer(webServer);
   //strUID = strUID.substring(0, strUID.length());
-  if (strUID.length() && _mqttServer.length()) { //если задан параметр UID через конфигуратор страницы
+  if (strUID.length() && strWebServer.length()) { //если заданы параметры UID и WebServer через конфигуратор страницы
     // Отправляем серверу данные состояния,уровня сигнала и батареи
-    String post = "http://" + _mqttServer + "/control?device=" + strUID + "&alarm=";
-    post += String(stateCode);
-    post += "&rssi=";
-    post += String(WiFi.RSSI());
-    post += "&vcc=";
-    post += String(ESP.getVcc() / 1024.0);
-    httpClient.begin(client, post);
+    String request = "https://" + strWebServer + "/api/v1/facts/data/?uid=" + strUID + "&name=rssi&value=";
+    request += String(WiFi.RSSI());
+    httpClient.begin(client, request);
+    //int httpCode = httpClient.GET();
+    httpClient.end();
+    request = "https://" + strWebServer + "/api/v1/facts/data/?uid=" + strUID + "&name=vcc&value=";
+    request += String(ESP.getVcc() / 1024.0);
+    httpClient.begin(client, request);
     //int httpCode = httpClient.GET();
     httpClient.end();
     #ifndef NOSERIAL
-      Serial.println(post);
+      Serial.println(request);
     #endif
   }
 }
@@ -611,26 +631,6 @@ void METEO::readSensors() {
   if (isnan(Pressure) || (abs(Pressure - v) > climatePressTolerance)) {
     Pressure = v;
     publishPressure();
-  }
-}
-
-void METEO::sendSensorData() {
-  String strUID(uid);
-  strUID = strUID.substring(0, strUID.length()-1);
-  if (strUID.length() && _mqttServer.length()) { //если задан параметр UID через конфигуратор страницы
-    // Отправляем серверу данные температуры, влажности и давления
-    String post = "http://" + _mqttServer + "/control?device=" + strUID + "&celsio=";
-    post += String(climateTemperature);
-    post += "&humidity=";
-    post += String(climateHumidity);
-    post += "&pressure=";
-    post += String(Pressure);
-    httpClient.begin(client, post);
-    //int httpCode = httpClient.GET();
-    httpClient.end();
-    #ifndef NOSERIAL
-      Serial.println(post);
-    #endif
   }
 }
 
