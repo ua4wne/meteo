@@ -12,7 +12,7 @@
 ADC_MODE(ADC_VCC);
 
 #define USE_MQTT
-#define NOSERIAL
+//#define NOSERIAL
 //Отключаем лишние функции для экономии батареи аккумулятора
 //Выводы RST и D0 необходимо соединить
 //Датчик раз в 5 минут будет просыпаться, отправлять данные и снова засыпать
@@ -192,7 +192,7 @@ void METEO::setupExtra() {
 void METEO::loopExtra() {
   ESPMQTT::loopExtra();
   uint8_t sleep = digitalRead(sleep_on);
-
+  
   if((ESP.getVcc()/1024.0) < 2.8)
     sleep_time = 18e8; //просыпаемся раз в полчаса
   if((ESP.getVcc()/1024.0) < 2.7)
@@ -207,15 +207,14 @@ void METEO::loopExtra() {
   }
 
   if ((int32_t)millis() >= (int32_t)climateSendTime) {
-    #ifndef USE_MQTT
-    //sendSensorData();
+    #ifdef USE_MQTT
+    publishTemperature();
+    publishHumidity();
+    publishPressure();
     #endif
     climateSendTime = millis() + timeSendData;
   }
   if (sleep) {
-    //sendReport();
-    //readSensors();
-    //sendSensorData();
     ESP.deepSleep(sleep_time);
   }
 }
@@ -607,7 +606,7 @@ void METEO::readSensors() {
   if (! isnan(v) && (v >= -50.0) && (v <= 50.0)) {
     if (isnan(climateTemperature) || (abs(climateTemperature - v) > climateTempTolerance)) {
       climateTemperature = v;
-      publishTemperature();
+    //  publishTemperature();
     }
   } else {
     #ifndef NOSERIAL
@@ -619,7 +618,7 @@ void METEO::readSensors() {
   if (! isnan(v) && (v >= 0.0) && (v <= 100.0)) {
     if (isnan(climateHumidity) || (abs(climateHumidity - v) > climateHumTolerance)) {
       climateHumidity = v;
-      publishHumidity();
+    //  publishHumidity();
     }
   } else {
     #ifndef NOSERIAL
@@ -630,7 +629,7 @@ void METEO::readSensors() {
   v = bmp.readPressure() / 133.3;
   if (isnan(Pressure) || (abs(Pressure - v) > climatePressTolerance)) {
     Pressure = v;
-    publishPressure();
+  //  publishPressure();
   }
 }
 
