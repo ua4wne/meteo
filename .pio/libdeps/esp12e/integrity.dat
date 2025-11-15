@@ -1,1 +1,5 @@
+knolleary/PubSubClient@^2.8
+paulstoffregen/OneWire@^2.3.8
 adafruit/Adafruit Unified Sensor@^1.1.7
+adafruit/Adafruit BMP085 Library@^1.2.4
+https://github.com/adafruit/DHT-sensor-library

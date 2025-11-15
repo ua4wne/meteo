@@ -1,11 +1,11 @@
 #include <Wire.h>
+#include <DHT.h>
 #include <Adafruit_BMP085.h>
 #include <OneWire.h>
 #include <pgmspace.h>
 #include "esp_mqtt.h"
 #include "Date.h"
 #include "RTCmem.h"
-#include "DHT.h"
 #include <SPI.h>
 #include <ESP8266HTTPClient.h>
 
@@ -36,21 +36,18 @@ const char overMQTTClient[] PROGMEM = "METEO_"; // Префикс имени MQT
 char uid[16];                                   // идентификатор устройства
 char webServer[16];                             // web server name
 char readSensor[7];                             // период опроса датчиков температуры
-char psendData[7];                              // период отправки данных температуры
 char sendStatus[7];                             // период отправки статуса
 
 const char pathOption[] PROGMEM = "/option"; // Путь до страницы настройки параметров
 
-uint32_t timeReadSensor = 5000;  // период опроса датчиков температуры 5 сек
-uint32_t timeSendData = 60000;   // период отправки данных на сервер 60 сек
-uint32_t timeSendStatus = 30000; // период отправки статуса 30 сек
+uint32_t timeReadSensor = 10000;  // период опроса датчиков и отправки показаний 10 сек
+//uint32_t timeSendStatus = 30000; // период отправки статуса 30 сек
 uint32_t sleep_time = 30e7;      // период засыпания 5 минут
 
 // Имена параметров для Web-форм
 const char paramUid[] PROGMEM = "uid";
 const char paramWebServer[] PROGMEM = "webServer";
 const char paramReadSensor[] PROGMEM = "readSensor";
-const char paramSendData[] PROGMEM = "psendData";
 const char paramSendStatus[] PROGMEM = "sendStatus";
 
 // Имена JSON-переменных
@@ -62,6 +59,22 @@ const char jsonPressure[] PROGMEM = "pressure";
 const char mqttTemperatureTopic[] PROGMEM = "/Temperature";
 const char mqttHumidityTopic[] PROGMEM = "/Humidity";
 const char mqttPressureTopic[] PROGMEM = "/Pressure";
+
+// === Кэш последних значений ===
+struct CachedValue
+{
+  String name;
+  float lastValue;
+  bool hasValue = false;
+  float threshold = 0.1;
+  unsigned long lastSent = 0;         // время последней отправки
+  unsigned long maxInterval = 300000; // максимум 5 минут (300000 мс)
+};
+
+// Поддерживаем до 5 параметров (настройте под себя)
+#define MAX_PARAMS 5
+CachedValue paramCache[MAX_PARAMS];
+int paramCount = 0;
 
 WiFiClient client;
 
@@ -102,7 +115,6 @@ private:
   float climateHumTolerance;   // Порог изменения влажности
   float climatePressTolerance; // Порог изменения давления
   uint32_t climateReadTime;    // Время в миллисекундах, после которого можно считывать новое значение сенсоров
-  uint32_t climateSendTime;    // Время в миллисекундах, после которого можно отправлять на сервер новое значение сенсоров
   uint32_t statusReadTime;     // Время в миллисекундах, после которого можно отправлять на сервер данные о состоянии датчиков протечки
   float climateTemperature;    // Значение успешно прочитанной температуры
   float climateHumidity;       // Значение успешно прочитанной влажности
@@ -115,6 +127,70 @@ private:
 
   HTTPClient httpClient;
 };
+
+// Находим или создаём запись в кэше
+CachedValue *findOrCreateParam(const String &name, float threshold = 0.1)
+{
+  for (int i = 0; i < paramCount; i++)
+  {
+    if (paramCache[i].name == name)
+    {
+      return &paramCache[i];
+    }
+  }
+
+  if (paramCount < MAX_PARAMS)
+  {
+    paramCache[paramCount].name = name;
+    paramCache[paramCount].threshold = threshold;
+    return &paramCache[paramCount++];
+  }
+
+  return nullptr; // кэш переполнен
+}
+
+// Проверяет, нужно ли отправлять значение
+bool shouldSendValue(
+    const String &name,
+    float currentValue,
+    float threshold = 0.1,
+    unsigned long maxInterval = 300000 // 5 минут по умолчанию
+)
+{
+  CachedValue *param = findOrCreateParam(name, threshold);
+  if (!param)
+    return true;
+
+  // Обновляем максимальный интервал
+  param->maxInterval = maxInterval;
+
+  unsigned long now = millis();
+
+  // Первое значение — всегда отправляем
+  if (!param->hasValue)
+  {
+    param->lastValue = currentValue;
+    param->hasValue = true;
+    param->lastSent = now;
+    return true;
+  }
+
+  // Проверяем изменение
+  float diff = abs(currentValue - param->lastValue);
+  bool valueChanged = (diff >= threshold);
+
+  // Проверяем временной лимит
+  bool timeLimitExceeded = (now - param->lastSent >= param->maxInterval);
+
+  if (valueChanged || timeLimitExceeded)
+  {
+    param->lastValue = currentValue;
+    param->lastSent = now;
+    return true;
+  }
+
+  return false;
+}
 
 String charBufToString(const char *str, uint16_t bufSize)
 {
@@ -145,7 +221,6 @@ void METEO::setupExtra()
 
   // применяем настройки параметров
   String strReadSensor(readSensor);
-  String strSendData(psendData);
   String strSendStatus(sendStatus);
   if (strReadSensor.length())
   {
@@ -158,25 +233,14 @@ void METEO::setupExtra()
 #ifndef NOSERIAL
   Serial.println("timeReadSensor=" + String(timeReadSensor));
 #endif
-  if (strSendData.length())
-  {
-    timeSendData = strSendData.toInt();
-  }
-  else
-  {
-    timeSendData = 60000;
-  }
-#ifndef NOSERIAL
-  Serial.println("timeSendData=" + String(timeSendData));
-#endif
-  if (strSendStatus.length())
-  {
-    timeSendStatus = strSendStatus.toInt();
-  }
-  else
-  {
-    timeSendStatus = 30000;
-  }
+  // if (strSendStatus.length())
+  // {
+  //   timeSendStatus = strSendStatus.toInt();
+  // }
+  // else
+  // {
+  //   timeSendStatus = 30000;
+  // }
 #ifndef NOSERIAL
   Serial.println("timeSendStatus=" + String(timeSendStatus));
 #endif
@@ -187,7 +251,6 @@ void METEO::setupExtra()
   dht = new DHT(climatePin, type);
   dht->begin();
   climateReadTime = millis() + timeReadSensor;
-  climateSendTime = millis() + timeSendData;
   climateTemperature = NAN;
   climateHumidity = NAN;
   if (!bmp.begin())
@@ -209,7 +272,7 @@ void METEO::loopExtra()
     sleep_time = 18e8; // просыпаемся раз в полчаса
   if ((ESP.getVcc() / 1024.0) < 2.7)
     sleep_time = 36e8; // просыпаемся раз в час
-  if (sleep == 1)
+  if (sleep == 0)
   {
     Serial.println("Deep sleep!");
     sendReport();
@@ -218,11 +281,11 @@ void METEO::loopExtra()
   }
   else
   {
-    if ((int32_t)millis() >= (int32_t)statusReadTime)
-    {
-      sendReport();
-      statusReadTime = millis() + timeSendStatus;
-    }
+    // if ((int32_t)millis() >= (int32_t)statusReadTime)
+    // {
+    //   sendReport();
+    //   statusReadTime = millis() + timeSendStatus;
+    // }
     if ((int32_t)millis() >= (int32_t)climateReadTime)
     {
       readSensors();
@@ -252,8 +315,6 @@ uint16_t METEO::readConfig()
     offset += sizeof(webServer);
     getEEPROM(offset, readSensor);
     offset += sizeof(readSensor);
-    getEEPROM(offset, psendData);
-    offset += sizeof(psendData);
     getEEPROM(offset, sendStatus);
     offset += sizeof(sendStatus);
     uint8_t crc = crc8EEPROM(start, offset);
@@ -278,8 +339,6 @@ uint16_t METEO::writeConfig(bool commit)
   offset += sizeof(webServer);
   putEEPROM(offset, readSensor);
   offset += sizeof(readSensor);
-  putEEPROM(offset, psendData);
-  offset += sizeof(psendData);
   putEEPROM(offset, sendStatus);
   offset += sizeof(sendStatus);
   uint8_t crc = crc8EEPROM(start, offset);
@@ -328,10 +387,6 @@ bool METEO::setConfigParam(const String &name, const String &value)
     else if (name.equals(FPSTR(paramReadSensor)))
     {
       strncpy(readSensor, value.c_str(), sizeof(readSensor));
-    }
-    else if (name.equals(FPSTR(paramSendData)))
-    {
-      strncpy(psendData, value.c_str(), sizeof(psendData));
     }
     else if (name.equals(FPSTR(paramSendStatus)))
     {
@@ -473,16 +528,6 @@ void METEO::handleOptionConfig()
   page += sizeof(readSensor);
   page += F(" maxlength=");
   page += sizeof(readSensor);
-  page += F(">\n");
-  page += F("<label>Send data period:</label>\n\
-  <input type=\"text\" name=\"");
-  page += FPSTR(paramSendData);
-  page += F("\" value=\"");
-  page += escapeQuote(charBufToString(psendData, sizeof(psendData)));
-  page += F("\" size=");
-  page += String(sizeof(psendData));
-  page += F(" maxlength=");
-  page += String(sizeof(psendData));
   page += F(">\n");
   page += F("<label>Send status period:</label>\n\
   <input type=\"text\" name=\"");
@@ -627,25 +672,66 @@ void METEO::publishPressure()
 
 void METEO::sendReport()
 {
+  if (!WiFi.isConnected())
+    return;
   String strUID(uid);
   String strWebServer(webServer);
-  // strUID = strUID.substring(0, strUID.length());
+
   if (strUID.length() && strWebServer.length())
-  { // если заданы параметры UID и WebServer через конфигуратор страницы
-    // Отправляем серверу данные состояния,уровня сигнала и батареи
-    String request = "https://" + strWebServer + "/api/v1/facts/data/?uid=" + strUID + "&name=rssi&value=";
-    request += String(WiFi.RSSI());
-    httpClient.begin(client, request);
-    // int httpCode = httpClient.GET();
-    httpClient.end();
-    request = "https://" + strWebServer + "/api/v1/facts/data/?uid=" + strUID + "&name=vcc&value=";
-    request += String(ESP.getVcc() / 1024.0);
-    httpClient.begin(client, request);
-    // int httpCode = httpClient.GET();
-    httpClient.end();
-#ifndef NOSERIAL
-    Serial.println(request);
-#endif
+  {
+    String jsonBody = "[";
+    bool hasData = false;
+
+    // Проверяем RSSI
+    float rssi = WiFi.RSSI();
+    if (shouldSendValue("rssi", rssi, 2.0))
+    { // отправляем при изменении на 2 dBm
+      if (hasData)
+        jsonBody += ",";
+      jsonBody += "{\"name\":\"rssi\",\"value\":" + String(rssi) + "}";
+      hasData = true;
+    }
+
+    // Проверяем напряжение
+    float vcc = ESP.getVcc() / 1024.0;
+    if (shouldSendValue("vcc", vcc, 0.05))
+    { // отправляем при изменении на 0.05V
+      if (hasData)
+        jsonBody += ",";
+      jsonBody += "{\"name\":\"vcc\",\"value\":" + String(vcc, 3) + "}";
+      hasData = true;
+    }
+
+    // Добавьте другие параметры по аналогии
+    // float temp = readTemperature();
+    // if (shouldSendValue("temperature", temp, 0.5)) { ... }
+
+    if (!hasData)
+    {
+      Serial.println("Нет изменений для отправки");
+      return;
+    }
+
+    jsonBody += "]";
+
+    // Отправка (ваш существующий код POST)
+    HTTPClient http;
+    String url = "https://" + String(webServer) + "/api/v1/facts/data/?uid=" + String(uid);
+    http.begin(client, url);
+    http.addHeader("Content-Type", "application/json");
+
+    int code = http.POST(jsonBody);
+    if (code == 201 || code == 200)
+    {
+      Serial.println("Данные отправлены: " + jsonBody);
+    }
+    else
+    {
+      Serial.println("Ошибка отправки: " + String(code));
+      // Добавьте в очередь при ошибке (из предыдущего решения)
+    }
+
+    http.end();
   }
 }
 
