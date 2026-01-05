@@ -11,16 +11,6 @@ PubSubClient mqttClient(espClient);
 bool firstPublish = true;
 unsigned long lastPublishTime = 0;
 
-// Коэффициент конвертации hPa в мм.рт.ст.
-const float HPA_TO_MMHG = 0.7500616827;
-
-/**
- * @brief Конвертация давления из hPa в мм.рт.ст.
- */
-float convertPressureToMmHg(float pressureHpa) {
-    return pressureHpa * HPA_TO_MMHG;
-}
-
 /**
  * @brief Генерация базового топика MQTT на основе MAC-адреса
  */
@@ -65,16 +55,8 @@ void reconnectMqtt() {
     if (mqttClient.connected())
         return;
     
-    String clientId = "esp32c3_" + WiFi.macAddress();
+    String clientId = "esp32_" + WiFi.macAddress();
     clientId.replace(":", "");
-    
-    // Serial.print("[MQTT] Attempting connection to ");
-    // Serial.print(config.mqtt_server);
-    // Serial.print(":");
-    // Serial.print(config.mqtt_port);
-    // Serial.print(" as ");
-    // Serial.print(clientId);
-    // Serial.println("...");
     
     bool connected = false;
     
@@ -105,12 +87,11 @@ void publishSensorData(float currentTemp, float currentHumidity, float currentPr
     
     unsigned long now = millis();
     
-    // Используем config.publishingInterval вместо STATUS_RETRY_DELAY
-    // Публикуем при первом включении или по истечении интервала
+    // В режиме сна firstPublish = true → публикуем всегда
+    // В обычном режиме — учитываем интервал
     if (!firstPublish && (now - lastPublishTime < config.publishingInterval))
         return;
     
-    // Проверяем подключение
     reconnectMqtt();
     if (!mqttClient.connected()) {
         Serial.println("[MQTT] Not connected, skipping publish");
@@ -124,66 +105,38 @@ void publishSensorData(float currentTemp, float currentHumidity, float currentPr
     if (!isnan(currentTemp) && currentTemp > -100 && currentTemp < 100) {
         String tempTopic = baseTopic + "/temperature";
         String tempValue = String(currentTemp, 1);
-        
-        if (mqttClient.publish(tempTopic.c_str(), tempValue.c_str(), true)) {
-            //Serial.printf("[MQTT] Published to %s: %s°C\n", 
-                        // tempTopic.c_str(), tempValue.c_str());
-        } else {
-            Serial.printf("[MQTT] Failed to publish temperature to %s\n", tempTopic.c_str());
+        if (!mqttClient.publish(tempTopic.c_str(), tempValue.c_str(), true)) {
             publishSuccess = false;
         }
-    } else {
-        Serial.println("[MQTT] Temperature value invalid, skipping");
     }
     
     // Публикуем влажность
     if (!isnan(currentHumidity) && currentHumidity >= 0 && currentHumidity <= 100) {
         String humTopic = baseTopic + "/humidity";
         String humValue = String(currentHumidity, 1);
-        
-        if (mqttClient.publish(humTopic.c_str(), humValue.c_str(), true)) {
-            //Serial.printf("[MQTT] Published to %s: %s%%\n", 
-            //             humTopic.c_str(), humValue.c_str());
-        } else {
-            Serial.printf("[MQTT] Failed to publish humidity to %s\n", humTopic.c_str());
+        if (!mqttClient.publish(humTopic.c_str(), humValue.c_str(), true)) {
             publishSuccess = false;
         }
-    } else {
-        Serial.println("[MQTT] Humidity value invalid, skipping");
     }
     
     // Публикуем давление в мм.рт.ст.
-    if (!isnan(currentPressure) && currentPressure > 800 && currentPressure < 1200) {
-        float pressureMmHg = convertPressureToMmHg(currentPressure);
+    if (!isnan(currentPressure) && currentPressure > 300 && currentPressure < 1200) {
         String pressTopic = baseTopic + "/pressure";
-        String pressValue = String(pressureMmHg, 1);
-        
-        if (mqttClient.publish(pressTopic.c_str(), pressValue.c_str(), true)) {
-            //Serial.printf("[MQTT] Published to %s: %s мм.рт.ст.\n", 
-             //            pressTopic.c_str(), pressValue.c_str());
-            //Serial.printf("[MQTT] Original value: %.1f hPa = %.1f mmHg\n", 
-            //             currentPressure, pressureMmHg);
-        } else {
-            Serial.printf("[MQTT] Failed to publish pressure to %s\n", pressTopic.c_str());
+        String pressValue = String(currentPressure, 1);
+        if (!mqttClient.publish(pressTopic.c_str(), pressValue.c_str(), true)) {
             publishSuccess = false;
         }
-    } else {
-        Serial.println("[MQTT] Pressure value invalid, skipping");
-    }
-    
-    // Публикуем статус устройства
-    // String statusTopic = baseTopic + "/status";
-    // String statusValue = publishSuccess ? "online" : "error";
-    
-    // mqttClient.publish(statusTopic.c_str(), statusValue.c_str(), true);
-    //Serial.printf("[MQTT] Status: %s\n", statusValue.c_str());
+    }    
     
     // Обновляем время и флаг
     lastPublishTime = now;
     firstPublish = false;
     
-    //Serial.printf("[MQTT] Next publish in %.1f minutes\n", 
-    //             config.publishingInterval / 60000.0);
+    if (publishSuccess) {
+        Serial.println("[MQTT] Data published successfully");
+    } else {
+        Serial.println("[MQTT] Partial publish failure");
+    }
 }
 
 /**

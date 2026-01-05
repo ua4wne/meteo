@@ -42,11 +42,8 @@ void initSensors()
 
 void readBatteryVoltage()
 {
-    analogSetAttenuation(ADC_11db); // до 3.9 В
     int raw = analogRead(34);
-    float voltage = (raw * 3.3f / 4095.0f) * 2.0f; // 100k+100k = коэффициент 2.0
-    // Калибровка (пример):
-    // voltage = voltage * 1.017; // если реальное 4.12, а код показывает 4.05
+    float voltage = (raw * 3.3f / 4095.0f) * 2.0f; // 100k+100k
     currentVcc = voltage;
 }
 
@@ -81,7 +78,7 @@ void readSensors()
         lastError += (lastError.length() > 0 ? " | " : "") + String("BMP180 read error");
         currentPressure = -999.0;
     } else {
-        // Переводим в гПа (hPa): 1 hPa = 100 Pa
+        // Переводим в мм. рт. ст.
         currentPressure = pressure_pa / 133.3f; // теперь в мм. рт. ст.
     }
 }

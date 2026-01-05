@@ -197,6 +197,29 @@ String getWifiNetworksOptions()
   return options;
 }
 
+void restartAfterDelay(void *pvParameter)
+{
+  delay(2000); // даём время на отправку
+  ESP.restart();
+  vTaskDelete(NULL);
+}
+
+bool isAuthorized(AsyncWebServerRequest *request)
+{
+    // Защищаем ВСЕ страницы, включая "/"
+    const char* username = "admin"; // фиксированный логин
+    const char* password = config.web_password;
+
+    // Используем встроенную проверку авторизации AsyncWebServer
+    if (!request->authenticate(username, password, "Secure Area"))
+    {        // Запрашиваем логин/пароль
+        request->requestAuthentication();
+        return true;
+    }
+
+    return true;
+}
+
 // === Обработчики GET ===
 
 void handleRoot(AsyncWebServerRequest *request)
@@ -371,7 +394,6 @@ void handleMqttOptions(AsyncWebServerRequest *request)
 }
 
 // === Обработчики POST ===
-
 void handleSaveWifi(AsyncWebServerRequest *request)
 {
   if (request->hasParam("ap_mode", true))
@@ -391,10 +413,22 @@ void handleSaveWifi(AsyncWebServerRequest *request)
     }
   }
   saveConfig();
-  request->send(200, "text/plain", "Wi-Fi settings saved. Rebooting...");
-  delay(1000);
-  ESP.restart();
+
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Wi-Fi сохранён</title></head>
+<body style="text-align:center; padding:2rem; font-family:sans-serif;">
+  <h2>✅ Wi-Fi настройки сохранены!</h2>
+  <p>Устройство перезагружается...</p>
+  <script>setTimeout(() => window.location.href = "/", 1500);</script>
+</body></html>
+    )rawliteral";
+
+  request->send(200, "text/html; charset=utf-8", html);
+  xTaskCreate(restartAfterDelay, "RestartTask", 2048, NULL, 1, NULL);
 }
+
+// Аналогично для handleSaveBase и handleSaveMqtt
 
 void handleSaveBase(AsyncWebServerRequest *request)
 {
@@ -423,9 +457,19 @@ void handleSaveBase(AsyncWebServerRequest *request)
     config.temp_offset = request->getParam("temp_offset", true)->value().toFloat();
   }
   saveConfig();
-  request->send(200, "text/plain", "Base settings saved. Rebooting...");
-  delay(1000);
-  ESP.restart();
+
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Base settings saved. Rebooting...</title></head>
+<body style="text-align:center; padding:2rem; font-family:sans-serif;">
+  <h2>✅ Wi-Fi настройки сохранены!</h2>
+  <p>Устройство перезагружается...</p>
+  <script>setTimeout(() => window.location.href = "/", 1500);</script>
+</body></html>
+    )rawliteral";
+
+  request->send(200, "text/html; charset=utf-8", html);
+  xTaskCreate(restartAfterDelay, "RestartTask", 2048, NULL, 1, NULL);
 }
 
 void handleSaveMqtt(AsyncWebServerRequest *request)
@@ -447,24 +491,59 @@ void handleSaveMqtt(AsyncWebServerRequest *request)
     strlcpy(config.mqtt_password, request->getParam("mqtt_password", true)->value().c_str(), sizeof(config.mqtt_password));
   }
   saveConfig();
-  request->send(200, "text/plain", "MQTT settings saved. Rebooting...");
-  delay(1000);
-  ESP.restart();
+
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>MQTT settings saved. Rebooting...</title></head>
+<body style="text-align:center; padding:2rem; font-family:sans-serif;">
+  <h2>✅ Wi-Fi настройки сохранены!</h2>
+  <p>Устройство перезагружается...</p>
+  <script>setTimeout(() => window.location.href = "/", 1500);</script>
+</body></html>
+    )rawliteral";
+
+  request->send(200, "text/html; charset=utf-8", html);
+  xTaskCreate(restartAfterDelay, "RestartTask", 2048, NULL, 1, NULL);
 }
 
 // === Инициализация сервера ===
-
 void initWebServer()
 {
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/options/wifi", HTTP_GET, handleWifiOptions);
-  server.on("/options/base", HTTP_GET, handleBaseOptions);
-  server.on("/options/mqtt", HTTP_GET, handleMqttOptions);
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleRoot(request);
+    });
 
-  server.on("/save/wifi", HTTP_POST, handleSaveWifi);
-  server.on("/save/options", HTTP_POST, handleSaveBase);
-  server.on("/save/mqtt", HTTP_POST, handleSaveMqtt);
+    server.on("/options/wifi", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleWifiOptions(request);
+    });
 
-  server.begin();
-  Serial.println("[WebServer] Async server started on port 80");
+    server.on("/options/base", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleBaseOptions(request);
+    });
+
+    server.on("/options/mqtt", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleMqttOptions(request);
+    });
+
+    server.on("/save/wifi", HTTP_POST, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleSaveWifi(request);
+    });
+
+    server.on("/save/options", HTTP_POST, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleSaveBase(request);
+    });
+
+    server.on("/save/mqtt", HTTP_POST, [](AsyncWebServerRequest *request){
+        if (!isAuthorized(request)) return;
+        handleSaveMqtt(request);
+    });
+
+    server.begin();
+    Serial.println("[WebServer] Async server started on port 80 with authentication");
 }
